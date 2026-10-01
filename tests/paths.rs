@@ -26,6 +26,10 @@ fn external_process_paths_are_compatible_without_changing_storage_identity() {
 #[cfg(windows)]
 #[test]
 fn reserved_windows_paths_are_not_blindly_rewritten() {
-    let reserved = std::path::Path::new(r"\\?\C:\COM");
-    assert_eq!(dunce::simplified(reserved), reserved);
+    // Windows reserves NUL and COM1, not the ordinary filename COM.
+    // https://learn.microsoft.com/windows/win32/fileio/naming-a-file
+    for name in [r"\\?\C:\NUL", r"\\?\C:\COM1"] {
+        let reserved = std::path::Path::new(name);
+        assert_eq!(dunce::simplified(reserved), reserved);
+    }
 }

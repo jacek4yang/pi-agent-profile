@@ -11,6 +11,7 @@ repository = "https://github.com/jacek4yang/pi-agent-profile"
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 fs2 = "0.4"
+dunce = "1.0.5"
 ctrlc = "3.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

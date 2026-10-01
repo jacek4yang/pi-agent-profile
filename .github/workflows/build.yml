@@ -1,0 +1,138 @@
+name: Rust test, build and release
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: rust-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve initial lockfile and canonical source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f Cargo.lock ]; then
+            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+              echo 'Cargo.lock must be committed before PR validation' >&2
+              exit 1
+            fi
+            cargo generate-lockfile
+            cargo fmt --all
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add Cargo.lock src tests
+            git commit -m 'build: lock dependencies and format Rust source'
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  build:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
+      - name: Format, lint, test and build
+        shell: bash
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          set -euo pipefail
+          rustup target add '${{ matrix.target }}'
+          cargo fmt --all -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --release --locked --target '${{ matrix.target }}'
+          BIN='target/${{ matrix.target }}/release/pi-profile'
+          if [ "$RUNNER_OS" = Windows ]; then BIN="$BIN.exe"; fi
+          "$BIN" --version
+          "$BIN" --help
+      - name: Package binary with embedded-rule documentation
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+        run: python scripts/package.py '${{ matrix.target }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [source, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete matrix and publish new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["package"]["version"])')
+          export VERSION
+          python - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          v = os.environ['VERSION']
+          targets = ['x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl', 'aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc']
+          expected = {f'pi-profile-v{v}-{t}' + ('.zip' if 'windows' in t else '.tar.gz') for t in targets}
+          actual = {p.name for p in Path('dist').iterdir() if p.is_file()}
+          assert expected == actual, (expected, actual)
+          Path('dist/SHA256SUMS').write_text(''.join(f'{hashlib.sha256((Path("dist")/n).read_bytes()).hexdigest()}  {n}\n' for n in sorted(expected)))
+          PY
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isDraft > existing-release.json 2>/dev/null; then
+            if python -c 'import json; raise SystemExit(not json.load(open("existing-release.json"))["isDraft"])'; then
+              echo 'An existing draft needs inspection; refusing to overwrite or publish partial assets.' >&2
+              exit 1
+            fi
+            echo "Version v$VERSION already exists; artifacts will not overwrite it. Bump Cargo.toml for a new release."
+            exit 0
+          fi
+          printf '%s\n' "Rust interactive Pi profile manager." "" "Source: $SOURCE_SHA" "Five native platforms passed format, clippy, tests and release-binary smoke checks." "See README for prerequisites, proxy routing, backup boundaries and unsigned-binary warnings." > release-notes.md
+          gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --title "Pi Profile v$VERSION" --draft --notes-file release-notes.md
+          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false

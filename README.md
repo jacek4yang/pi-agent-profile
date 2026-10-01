@@ -1,526 +1,217 @@
-# Pi Agent Profile
+# Pi Profile
 
-A portable, idempotent workstation profile for [Pi](https://github.com/earendil-works/pi), designed to turn a fresh or partially configured Pi environment into the same high-capability coding setup on Linux, macOS, and Windows.
+独立的 Rust 交互式配置程序：为 Linux、macOS、Windows 上的 Pi Agent 生成配置，安装或更新所选插件，并管理后续修改、诊断与配置回滚。
 
-Repository: `https://github.com/jacek4yang/pi-agent-profile`
+**不是 `~/.pi/agent` 的备份，不同步认证和会话。** 安装器内嵌规则模板，下载一个适合本机的 Release 即可运行；不需要克隆仓库、不需要 Rust，也不需要 Python。Pi 本身以及 npm 插件的安装/更新仍要求 **Node.js ≥ 22.19 和 npm**。
 
-This repository is intentionally **not** a backup of `~/.pi/agent`. It is a declarative profile: it declares the global instructions, Pi settings, extension configuration, required packages, network policy, and reconciliation behavior that should exist on a machine. The bootstrap detects what is already present, updates or installs what is missing, preserves unrelated settings, backs up managed files, applies the profile, and runs non-destructive checks.
+[下载 Release](https://github.com/jacek4yang/pi-agent-profile/releases/latest) · [构建状态](https://github.com/jacek4yang/pi-agent-profile/actions) · [安全边界](docs/SECURITY.md) · [配置设计](docs/DESIGN.md)
 
-## Goals
+## 1. 下载与运行
 
-- One profile for Linux, macOS, and Windows.
-- Prefer Git Bash on Windows so the same Bash workflow is used everywhere.
-- Work with an existing Pi installation, even when only some extensions are installed.
-- Update Pi and all managed Pi packages by default.
-- Preserve unrelated user configuration instead of replacing `settings.json` wholesale.
-- Keep authentication, sessions, secrets, caches, and machine-local state out of Git.
-- Make long-running coding agents more autonomous without bypassing real authorization boundaries.
-- Keep Code Mode, context pruning, compaction, LSP, search, validation, and network routing consistent across machines.
-- Make every profile application recoverable through automatic backups.
+| 系统 | Release 文件名后缀 | 包内程序 |
+|---|---|---|
+| Linux x86_64 | `x86_64-unknown-linux-musl.tar.gz` | `pi-profile` |
+| Linux ARM64 | `aarch64-unknown-linux-musl.tar.gz` | `pi-profile` |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` | `pi-profile` |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` | `pi-profile` |
+| Windows x64 | `x86_64-pc-windows-msvc.zip` | `pi-profile.exe` |
 
-## Managed Pi packages
+文件完整名称为 `pi-profile-v<版本>-<目标>.tar.gz` 或 `.zip`。从同一次 Release 下载 `SHA256SUMS`，在解压和运行前核对目标压缩包的 SHA-256。校验和检测传输损坏，不等于发行者签名。
 
-The profile currently manages these package sources:
-
-| Package | Role |
-| --- | --- |
-| `@ff-labs/pi-fff` | Fast file/search workflow used by the agent |
-| `@narumitw/pi-lsp` | LSP integration |
-| `pi-context-usage` | Context usage visibility |
-| `pi-context-prune` | Agent-controlled context pruning |
-| `pi-web-search` | Web search extension |
-| `@lll9p/pi-better-compaction` | Improved compaction pipeline |
-
-Package specs are intentionally unpinned. A normal online bootstrap asks Pi to update each managed source, so a machine with stale packages converges toward current releases. If reproducibility is more important than automatic upgrades, pin package versions in `profile.json` on a release/tagged branch.
-
-## What the profile manages
-
-The managed state is declared in `profile.json`.
-
-```text
-AGENTS.md                                      -> ~/.pi/agent/AGENTS.md
-APPEND_SYSTEM.md                               -> ~/.pi/agent/APPEND_SYSTEM.md
-config/settings.patch.json                     -> merge into settings.json
-config/pi-fff.json                             -> merge into pi-fff.json
-config/lsp.json                                -> merge into lsp.json
-config/context-prune.json                      -> merge into context-prune/settings.json
-config/better-compaction.json                  -> merge into extensions/pi-better-compaction/config.json
-```
-
-Text policy files are managed as complete files. JSON configuration is deep-merged: keys owned by the profile are reconciled while unrelated keys already present on the machine are retained.
-
-The default profile includes:
-
-- OpenAI as the default provider and `gpt-6-astra` at medium thinking.
-- Code Mode as the default tool surface, with `mode: "only"`.
-- bounded retry/timeout behavior;
-- native Pi compaction settings and model-specific token budgets;
-- `pi-context-prune` in `agentic-auto` mode using `gpt-6-luna` for summaries;
-- `pi-better-compaction` with continuity protection enabled;
-- FFF configuration that avoids broad root/home scanning;
-- LSP definitions for `ty`, `ruff`, and `rust-analyzer`;
-- global engineering rules for autonomous execution, evidence, validation, context continuity, and network routing.
-
-## Deliberately not synchronized
-
-The following must remain machine-local and are never part of this public profile:
-
-- `auth.json` and authentication state;
-- OAuth tokens and API keys;
-- browser cookies or signed URLs;
-- session JSONL files and conversation history;
-- provider payload/debug dumps;
-- Pi package caches and installed package directories;
-- generated artifacts and compaction debug data;
-- project-local `.pi/`, project `AGENTS.md`, or project approval rules;
-- machine-specific secrets;
-- `config/local.json`.
-
-Do not commit those files even if the repository is later made private.
-
-## Prerequisites
-
-For an existing Pi environment:
-
-- Node.js `>= 22.19.0`;
-- Pi available on `PATH`;
-- Git for cloning/updating the repository.
-
-If Pi is missing but `npm` is available, an online bootstrap can install the official `@earendil-works/pi-coding-agent` package.
-
-Recommended development tools, checked by `doctor` but not forcibly installed by this profile:
-
-- `git`
-- `rg`
-- `fd`
-- `uv`
-- `ruff`
-- `ty`
-- `rustup`
-- `rust-analyzer`
-
-Language toolchains stay project-owned. For example, a Rust project may need `rust-analyzer` installed for the exact rustup toolchain selected by that project.
-
-## Network policy
-
-This profile follows three routing classes. The routes are also documented in the global `AGENTS.md` so Pi knows how to classify task traffic.
-
-| Traffic | Route |
-| --- | --- |
-| Known domestic Chinese services, localhost, private/LAN/Tailscale resources | Direct unless an endpoint-specific rule says otherwise |
-| Public international resources, anonymous GitHub, public packages/artifacts | `http://127.0.0.1:10809` (or SOCKS on the same port when appropriate) |
-| Requests carrying personal credentials/private account data, authenticated GitHub/Git, Google API/OAuth flows | `http://127.0.0.1:10808` (or SOCKS on the same port when appropriate) |
-
-Authentication-sensitive routing takes precedence over the public-download route.
-
-The bootstrap itself uses the **public** proxy for Pi/npm/package update traffic. If `10809` is unavailable, it does not silently rotate to `10808` or direct Internet access: online updates are skipped and local profile application can still continue.
-
-`127.0.0.1` means the host actually executing the command. Do not assume those listeners exist inside an SSH target, container, CI runner, or remote tool host.
-
-## Quick start
-
-### Linux
-
-Clone the public profile through the public international route:
+Linux/macOS，解压后进入目录：
 
 ```bash
-git -c http.proxy=http://127.0.0.1:10809 \
-  clone https://github.com/jacek4yang/pi-agent-profile.git
-cd pi-agent-profile
-bash bootstrap.sh
+./pi-profile
 ```
 
-### macOS
-
-The same flow applies:
-
-```bash
-git -c http.proxy=http://127.0.0.1:10809 \
-  clone https://github.com/jacek4yang/pi-agent-profile.git
-cd pi-agent-profile
-bash bootstrap.sh
-```
-
-### Windows (preferred: Git Bash)
-
-Git for Windows / Git Bash is the preferred path. From PowerShell:
+Windows，在 PowerShell 或 Git Bash 进入解压目录：
 
 ```powershell
-git -c http.proxy=http://127.0.0.1:10809 clone https://github.com/jacek4yang/pi-agent-profile.git
-cd pi-agent-profile
-.\bootstrap.ps1
+.\pi-profile.exe
 ```
 
-`bootstrap.ps1` searches the normal Git for Windows locations and the installed `git.exe`. If Git Bash exists, it delegates to the same `bootstrap.sh` used on Linux/macOS. Only when Git Bash is unavailable does it fall back to the shared Node core directly.
+Windows 会检测 Git for Windows 的常见路径和 `git.exe` 对应目录，优先使用 **Git Bash** 执行 npm/Pi 命令，并在选择启用时把检测出的真实 Bash 路径写入 Pi 的 `shellPath`。不会将 Linux 的 `/bin/bash` 写到 Windows，也不会把 WSL 的 `bash.exe` 当作 Git Bash。没有 Git Bash 时，可使用标准 npm 安装的 Node CLI 入口；无法安全解析的自定义包装器会报告问题，不拼接到 `cmd /c` 猜测执行。
 
-If you are already inside Git Bash:
+下载器/浏览器走哪条线路由它自身决定；安装器不能追溯改变下载路径。该程序没有 Authenticode/Apple notarization 签名。请核对来源与校验和并按系统的单应用许可流程操作，不要全局关闭安全检查。
 
-```bash
-bash bootstrap.sh
-```
+## 2. 首次运行：问答生成，而非覆盖整份配置
 
-The repository intentionally does not hard-code `/bin/bash` into Pi's portable `settings.json`.
+按回车采用显示的默认值，输入 `y` / `n` 作出选择。向导依次询问：
 
-## What `bootstrap` does
+1. 是否管理全局工程规则和运行时补充。
+2. 是否启用 Code Mode only。
+3. 六个插件分别启用、保持现状或解除全局加载。
+4. 是否解除所选插件已有的版本锁定。
+5. 是否应用建议的超时、重试和基础压缩设置。
+6. 是否修改默认 provider/model/thinking；摘要模型单独填写。
+7. 可选高级设置：steeringMode、Windows Git Bash。
+8. 下载网络模式及代理地址；Pi 模型请求代理另行选择。
+9. 是否允许安装/更新 Pi 核心。
+10. 查看变更文件和插件清单，**最后确认才写入**。
 
-A normal online run is idempotent and performs this sequence:
+没有任何问题要求输入 API key、OAuth token、Cookie 或登录密码。安装完成后按 Pi 支持的方式自行登录。模型 ID 是配置值，不代表账户实际拥有该模型；在 Pi 中用 `/model` 核实可用模型。示例中的 `gpt-6-astra`、`gpt-6-luna` 是该个人配置的选择，不是对所有账户的可用性承诺。
 
-1. Load and validate `profile.json`.
-2. Verify the minimum Node.js version.
-3. Locate Pi; install the official Pi npm package if Pi is missing and online installation is possible.
-4. Check the configured public proxy before attempting public Internet updates.
-5. Run `pi update --self` unless disabled.
-6. Install missing managed Pi packages.
-7. Ask Pi to update every managed package source.
-8. Refuse to shadow an existing global `AGENTS.override.md` silently.
-9. Create a timestamped backup of every managed destination.
-10. Deep-merge managed JSON configuration and install the global instruction files.
-11. Apply the optional machine-local `config/local.json` overlay when present.
-12. Write `.profile-state.json` in the Pi agent directory.
-13. Run the profile doctor.
-14. Tell you to restart Pi or run `/reload` in already-running Pi sessions.
+### 插件目录
 
-Existing unrelated `settings.json` keys and package declarations are preserved unless the profile explicitly owns the same key.
+| ID | 包 | 作用 |
+|---|---|---|
+| `fff` | `@ff-labs/pi-fff` | 文件搜索 |
+| `lsp` | `@narumitw/pi-lsp` | Language Server 集成 |
+| `usage` | `pi-context-usage` | 上下文用量显示 |
+| `prune` | `pi-context-prune` | Agent 主动整理上下文 |
+| `web` | `pi-web-search` | Web 搜索；服务可能另需认证 |
+| `compact` | `@lll9p/pi-better-compaction` | 压缩与文本 fallback |
 
-## Common commands
+这些第三方包在 Pi 中执行代码；选择安装意味着信任它们。Pruner 和 Better Compaction 可能产生额外模型调用。安装器不运行模型请求，也不声称安装后已验证 provider-native compaction。
 
-Linux/macOS/Git Bash:
+已有插件的版本 pin、对象形式的资源过滤参数和不相关插件都会保留。选择跟随最新版本时，仅解除已选插件的 pin。`disable` **移除对应全局 package 声明，不删除插件目录**；Pruner/Better Compaction 同时写 `enabled:false`。其他项目中的局部安装或规则不会被修改，因此项目仍可能单独加载同名插件。
 
-```bash
-# Normal reconciliation: update Pi/packages, back up, apply profile, doctor
-bash bootstrap.sh
+## 3. 下次运行：修改、更新、诊断、恢复
 
-# Keep the installed Pi core version, but still reconcile packages/profile
-bash bootstrap.sh --no-self-update
-
-# No network operations; apply only local profile files/config
-bash bootstrap.sh --offline
-
-# Preview writes/commands without modifying the Pi profile
-bash bootstrap.sh --dry-run
-
-# Non-destructive environment/profile inspection
-bash doctor.sh
-
-# Treat profile-level doctor problems as a failing exit status
-bash doctor.sh --strict
-
-# Restore the newest automatically created profile backup
-bash restore.sh
-
-# Restore a specific backup
-bash restore.sh ~/.pi/agent/.profile-backups/<timestamp>
-```
-
-Windows PowerShell entry points:
-
-```powershell
-.\bootstrap.ps1
-.\bootstrap.ps1 --offline
-.\bootstrap.ps1 --no-self-update
-.\doctor.ps1
-```
-
-For restore on Windows, use Git Bash and `bash restore.sh` so restore behavior stays identical across platforms.
-
-## First deployment onto an existing Pi installation
-
-No uninstall is required. The intended workflow is:
-
-```bash
-cd pi-agent-profile
-bash doctor.sh
-bash bootstrap.sh --dry-run
-bash bootstrap.sh
-```
-
-This is specifically designed for machines where:
-
-- some managed extensions are already installed;
-- some extensions are missing;
-- installed extensions are stale;
-- `settings.json` contains additional unrelated configuration;
-- old Pi sessions already exist.
-
-The profile does not delete sessions, credentials, unrelated extensions, or unknown settings.
-
-After apply:
+检测到本机保存的选择后，无参数运行会显示菜单：
 
 ```text
-/reload
+1 修改功能/配置
+2 更新已选择的 Pi/插件
+3 查看配置差异
+4 诊断
+5 备份/恢复
+6 退出
 ```
 
-Run `/reload` inside each Pi session that was already open. New Pi sessions automatically load the new global files.
-
-## Machine-local provider proxy (`10810`)
-
-The portable profile does **not** force Pi's own model/provider transport through port `10810`, because that listener may not exist on every machine.
-
-On a machine that does use the same provider proxy:
+常用命令（Windows 对应 `pi-profile.exe`）：
 
 ```bash
-cp config/local.example.json config/local.json
-bash bootstrap.sh --offline
+./pi-profile configure                  # 重新问答；以保存选择为默认
+./pi-profile update                     # 复用选择，确认后更新
+./pi-profile update --no-self-update    # 仅配置/选中的插件，不更新 Pi 核心
+./pi-profile configure --offline        # 只写本地配置，不下载
+./pi-profile plan                       # 不写文件，不发网络请求
+./pi-profile update --dry-run           # 预览本次操作
+./pi-profile doctor                     # 非破坏性诊断
+./pi-profile doctor --strict            # 缺少必要条件/配置漂移返回非零
+./pi-profile backups                    # 列出备份 ID
+./pi-profile restore --backup <ID>       # 预览并确认恢复
+./pi-profile export --output my.local.json
 ```
 
-`config/local.example.json` contains:
+`--no-self-update` 指 **Pi 核心**，不是 Rust 安装器。更新安装器本身时重新下载新的 Release；它会读取相同本机状态，不会重新要求填写所有信息。
 
-```json
-{
-  "settingsPatch": {
-    "httpProxy": "http://127.0.0.1:10810"
-  }
-}
-```
+**修改后退出并重新启动 Pi。** `/reload` 对已打开会话的资源增删并不等价于完整进程重启，尤其不要仅凭 reload 认定旧插件已经卸载。正在运行的 Pi 和配置程序不应同时修改配置。
 
-`config/local.json` is gitignored. It should hold non-secret machine-local overrides only.
+## 4. 目标目录与无交互部署
 
-## Updating this profile later
-
-For this public repository, pull through the public route:
-
-```bash
-cd pi-agent-profile
-git -c http.proxy=http://127.0.0.1:10809 pull --ff-only
-bash bootstrap.sh
-```
-
-If the repository is ever private or the Git operation is authenticated, use the private/authenticated route instead:
-
-```bash
-git -c http.proxy=http://127.0.0.1:10808 pull --ff-only
-bash bootstrap.sh
-```
-
-A profile update and a Pi/plugin update are deliberately coupled by the normal bootstrap. Use `--offline` or `--no-self-update` when you intentionally want a narrower change.
-
-## Doctor output
-
-`doctor` checks profile-level state without reading secret contents. It reports:
-
-- Node.js minimum-version compliance;
-- whether Pi is on `PATH`;
-- whether `AGENTS.override.md` would shadow the managed global rules;
-- whether all managed files exist;
-- whether managed package sources are configured;
-- whether legacy `pi-lsp.json` still exists;
-- whether `auth.json` exists **without reading or printing it**;
-- availability of common development commands;
-- whether the configured `10808`, `10809`, and example `10810` listeners are reachable.
-
-`doctor.sh --strict` exits non-zero for profile-level problems, which is useful for CI or workstation audits.
-
-## Backups and rollback
-
-Every non-dry-run apply creates a backup under:
+默认目标：`~/.pi/agent`（Windows 为用户目录下 `.pi/agent`）。优先级：
 
 ```text
-~/.pi/agent/.profile-backups/<timestamp>/
+--agent-dir > PI_CODING_AGENT_DIR > 默认用户目录
 ```
-
-The backup contains a manifest recording which managed files existed before the apply. Restore therefore handles both cases:
-
-- pre-existing managed files are copied back;
-- managed files that did not exist before the apply are removed.
-
-Restore does not attempt to downgrade Pi itself or npm package installations; it restores profile-managed files/configuration. If a package update must also be rolled back, use a version-pinned package source or a known repository release.
-
-## Global instruction files
-
-### `AGENTS.md`
-
-Contains durable engineering behavior:
-
-- evidence-first execution;
-- end-to-end autonomous completion within already authorized scope;
-- minimal and safe clarification behavior;
-- narrow search/read/edit strategy;
-- explicit command exit-status and side-effect handling;
-- validation and acceptance criteria;
-- durable checkpoints for long tasks;
-- blocker scoping instead of treating one permission/network failure as a whole-task failure;
-- prescribed proxy routing and secret-safe diagnostics.
-
-It explicitly avoids equating autonomy with unlimited permission. Project approval gates, destructive production actions, releases, merges, and other authorization boundaries remain authoritative.
-
-### `APPEND_SYSTEM.md`
-
-Contains Pi runtime/tool guidance that should not be duplicated throughout the durable engineering policy:
-
-- Code Mode orchestration principles;
-- QuickJS vs Node.js boundaries;
-- when JavaScript is preferable to spawning Python/Node and when it is not;
-- context-prune behavior;
-- recovery of pruned evidence;
-- compaction continuity constraints;
-- Git Bash preference on native Windows.
-
-The correct Pi filename is `APPEND_SYSTEM.md`.
-
-## LSP behavior
-
-The shared LSP profile defines:
-
-- `.py` / `.pyi` -> `ty`;
-- `.py` / `.pyi` -> `ruff`;
-- `.rs` -> `rust-analyzer`.
-
-The profile does not force-install project toolchains. If a Rust repository pins a rustup toolchain, make sure `rust-analyzer` is available for that exact toolchain, for example:
 
 ```bash
-rustup show active-toolchain
-rustup component add rust-analyzer rust-src --toolchain <toolchain>
+./pi-profile --agent-dir /path/to/agent configure
+./pi-profile --agent-dir /path/to/agent doctor
 ```
 
-A global `rust-analyzer --version` succeeding is not proof that the project-selected toolchain can launch its language server.
+不需要 `sudo`。本机选择存放在目标目录的 `.pi-profile/state.json`，不保存在公开仓库。
 
-## Legacy configuration
-
-Older machines may still have:
-
-```text
-~/.pi/agent/pi-lsp.json
-```
-
-The current profile manages:
-
-```text
-~/.pi/agent/lsp.json
-```
-
-`doctor` warns about the legacy file but does not delete it automatically. Remove/migrate it only after verifying which installed LSP extension version is active and that the new configuration is working.
-
-## Repository layout
-
-```text
-.
-├── AGENTS.md
-├── APPEND_SYSTEM.md
-├── LICENSE
-├── README.md
-├── SHA256SUMS
-├── bootstrap.ps1
-├── bootstrap.sh
-├── doctor.ps1
-├── doctor.sh
-├── profile.json
-├── restore.sh
-├── config/
-│   ├── better-compaction.json
-│   ├── context-prune.json
-│   ├── local.example.json
-│   ├── lsp.json
-│   ├── pi-fff.json
-│   └── settings.patch.json
-├── scripts/
-│   └── profile.mjs
-├── docs/
-│   ├── DESIGN.md
-│   └── SECURITY.md
-└── .github/
-    └── workflows/
-        └── ci.yml
-```
-
-## Configuration ownership
-
-`profile.json` is the single manifest for managed packages/files and network defaults.
-
-`config/settings.patch.json` deliberately contains only portable settings. Machine-specific provider routing belongs in ignored `config/local.json`.
-
-When adding a new managed JSON file, add it to `profile.json` and decide explicitly whether the merge semantics are correct. Arrays in profile-owned fields are replaced; nested objects are recursively merged.
-
-When adding another Pi package, add its package source to `profile.json`. Do not commit the resulting `~/.pi/agent/npm/` package tree.
-
-## Security model
-
-This repository is safe to keep public **only if secrets remain excluded**.
-
-Before every push, verify that the staged diff contains no:
-
-- API keys or tokens;
-- OAuth refresh/access tokens;
-- `auth.json`;
-- session logs;
-- Authorization headers;
-- signed URLs;
-- cookies;
-- private provider payloads;
-- machine-specific secrets.
-
-The profile never needs those values in Git. Authentication is performed independently on each workstation through Pi's supported login/credential mechanisms.
-
-See [`docs/SECURITY.md`](docs/SECURITY.md) for the explicit security boundary.
-
-## CI
-
-GitHub Actions validates the profile on Linux, macOS, and Windows. It checks:
-
-- Node syntax;
-- JSON parsing;
-- shell-script syntax where applicable;
-- repository SHA-256 manifest integrity;
-- offline reconciliation against an isolated temporary Pi agent directory;
-- preservation of an unrelated existing setting;
-- strict profile doctor behavior with a stub Pi executable.
-
-The CI does not use real credentials, real Pi sessions, or your local proxies.
-
-## Troubleshooting
-
-### Public proxy `10809` is not listening
-
-Online Pi/package updates are skipped rather than trying another route automatically. Start the intended local proxy, or intentionally run:
+自动化使用显式答案文件，不通过向导无限接受默认值：
 
 ```bash
-bash bootstrap.sh --offline
+./pi-profile configure --answers examples/answers.json --yes --offline
+./pi-profile update --yes
 ```
 
-### `AGENTS.override.md` exists
+`configure --yes` 没有 `--answers` 会拒绝执行，避免误配置新机器。没有交互终端时，也不会偷偷假定批准。答案文件仅存非秘密设置；导出不会复制 `settings.json` 中未知字段、认证或会话。
 
-A global `AGENTS.override.md` shadows `AGENTS.md`. Bootstrap refuses to pretend the managed rules are active. Inspect the override and intentionally remove/rename/merge it before applying the profile.
+答案字段见 [examples/answers.json](examples/answers.json)。插件的 `enable` / `disable` / `keep` 含义不同：`keep` 不修改也不更新；向导对已安装而选择 n 的插件会进一步询问是解除加载还是保持现状。
 
-### A managed JSON file is invalid
+### “不修改”与“关闭”
 
-Bootstrap stops instead of overwriting malformed JSON. Repair the file or restore a known backup first.
+- `tuning:false`：保留现有调优字段，不重置成出厂值。
+- `model:null`：保留现有默认模型。
+- `provider_proxy:null`：保留现有 Pi 代理；`""`：移除 `httpProxy`；URL：设置代理。
+- `steering_all:false`：不写此字段，不主动重置已有值。
+- `code_mode:false`：移除本工具的启用项并加入 `-codemode`；不使用不存在的 `codemode.mode="off"`。
+- `rules:false`：删除由本程序管理的规则块，保留块外个人内容。
 
-### A plugin is configured but behaves incorrectly
+需要撤销一次配置变更时，使用该次备份；不要把所有 n 理解为“恢复之前的一切”。
 
-Run:
+## 5. 配置保护与幂等性
+
+JSON 仅合并选中功能的字段，不替换全部 `settings.json`，不重置不相关 `extensions`、`skills`、trust 或认证设置。数组按具体用途处理：package 身份匹配、资源过滤保留、Code Mode 仅处理自己的条目。
+
+两份全局规则使用以下边界：
+
+```markdown
+<!-- pi-profile:begin -->
+由选择生成的规则
+<!-- pi-profile:end -->
+```
+
+块外内容保留；块内人工改动会报告冲突，不静默覆盖。确认要重新生成时才使用 `--overwrite-managed`。旧版完整模板在内容匹配时可直接纳入管理；不认识的既有内容不会被删除。
+
+`AGENTS.override.md` 会影响全局规则生效，所以存在它时必须先处理或在向导中取消管理规则。项目 `AGENTS.md` 的审批门槛仍然有效；项目 `.pi/APPEND_SYSTEM.md` 也可能优先于全局补充。本工具不会修改项目授权边界。
+
+相同选择且配置没有漂移时不重写、不生成多余配置备份。正常在线 `update` 仍会检查所选插件更新，这与“本地写入幂等”不是同一个概念。
+
+## 6. 网络策略
+
+默认 `split`：
+
+| 类型 | 路由 |
+|---|---|
+| 国外匿名公开资源和本程序的公开 npm/Pi 更新 | `http://127.0.0.1:10809` |
+| 后续 Agent 的个人认证请求，包括 Google API/OAuth、已认证 GitHub | `http://127.0.0.1:10808` |
+| 国内已知服务、localhost、私网/Tailscale | 直连 |
+| Pi 模型请求 | 独立保留或配置，可选 `http://127.0.0.1:10810` |
+
+安装器公开更新路径隔离用户 npmrc 和项目 cwd，设置进程级代理/registry，避免无意携带用户 npm token。只使用 HTTP/HTTPS proxy，因为 npm 并不统一支持 SOCKS 环境变量；你的混合代理端口应填写 `http://...`。选择 `direct` 明确直连；选择 `inherit` 才继承进程网络设置。
+
+`10809` 不可用时，不尝试 `10808`，不偷偷直连。已确认的本地配置可保存，但在线更新返回非零并说明未完成。代理检查仅确认 TCP listener，不证明上游一定可达。端口属于执行命令的本机，不代表 SSH 目标、容器或 MCP 后端有同样监听。
+
+自定义 `npmCommand` 可能覆盖路由，所以保留但拒绝自动更新，要求明确处理；不会为了联网修改用户的全局 npm/Git 配置。现有下载任务不需要个人认证；`10808` 写入动态 Agent 规则，不拿它盲目重试失败的公开安装。
+
+## 7. 备份、失败与回滚
+
+备份：`~/.pi/agent/.pi-profile/backups/<ID>/`。写入前保存变化文件的原始字节和校验和；原先不存在的文件也被记录。每个文件用同目录临时文件替换，多个文件的整体操作是 **可恢复事务，不是全局原子事务**。
 
 ```bash
-pi list
-bash doctor.sh
+./pi-profile backups
+./pi-profile restore --backup <ID>
 ```
 
-Then update through the normal bootstrap. Avoid copying plugin cache directories between machines.
+遇到进程中断或磁盘写入失败，`.pi-profile/pending.json` 会阻止下次继续配置。使用 `restore`，默认优先恢复这个中断事务。备份中损坏、路径越界、符号链接或恢复后的意外覆盖均会被拒绝。目标文件在备份后有额外改动时先检查，必要时明确 `restore --force`；恢复本身也保存当前状态作为新的备份。
 
-### Pi was already running during apply
+**配置回滚不等于降级 Pi/插件二进制。** npm 安装、扩展脚本和缓存副作用不属于配置事务。在线更新在本地配置之后进行，部分包失败不会伪装成全部完成，也不会抹掉独立成功结果。
 
-The files are on disk, but the existing session may still have the old prompt/configuration. Run:
+日志不输出全量配置或凭据，但备份可能包含原有 `settings.json` 内的敏感字段。Unix 本机状态目录使用 0700、写入文件 0600；Windows 依赖用户目录 ACL，不自动修改整棵目录权限。备份不是加密保险箱，不要提交它们。
 
-```text
-/reload
+## 8. Doctor 与真实验收
+
+Doctor 检查保存选择、管理块、配置漂移、Pi 版本、所选插件 `package.json` 是否实际存在、可用工具与本机代理 listener。它不会把“settings 里有声明”当作“插件已经安装”。`auth.json` 仅检查是否存在，不读取内容。
+
+Doctor 不是模型调用测试、LSP 启动测试或真实长程任务验收。部署后建议在一个小项目中确认 `/model`、搜索工具、Code Mode、LSP 和原生测试命令，再开展长任务。
+
+Python 的 `ty`/`ruff`、Rust 的 `rust-analyzer` 工具由现有项目环境提供。安装器不任意安装语言工具链。Rust 项目 pin 的 toolchain 与全局 toolchain 不一定相同；在项目内用 `rustup show active-toolchain` 判断，必要时为那个 toolchain 添加 `rust-analyzer`/`rust-src`。
+
+## 9. 源码、CI 和发布
+
+```bash
+cargo test --locked
+cargo clippy --locked --all-targets -- -D warnings
+cargo build --release --locked
 ```
 
-or restart Pi.
+Rust 版本由 `rust-toolchain.toml` 固定；依赖由 `Cargo.lock` 固定。初始仓库第一次 CI 会生成锁文件并格式化源代码，提交到 main；后续构建要求已有锁文件并使用 `--locked`。测试不要求真实账号，不调用模型，也不依赖用户本机代理。
 
-### Windows does not use Git Bash
+每次 main 更新运行五个平台原生测试和目标构建。只有全部成功才可发布新 Cargo 版本的 Release：先建立 draft、上传五个压缩包及总校验和，最后公开；已有正式版本不会被覆盖。维护者发布下一版时修改 `Cargo.toml` 版本并合并到 main。每个包的 `BUILD-INFO.json` 记录源码 SHA、目标、Rust 版本；Release tag 指向实际测试构建的提交。
 
-Install Git for Windows or ensure its `git.exe`/`bash.exe` is discoverable. `bootstrap.ps1` intentionally prefers Git Bash when available.
+CI 和打包脚本会使用构建机的 Python，但分发的安装程序为 Rust 原生二进制，不依赖 Python/Node 启动。项目不承诺消除所有模型提前结束或网络中断；全局规则解决工作策略，运行故障仍须按证据诊断。
 
-## Reproducible snapshots
+## 10. 仓库边界
 
-The normal profile tracks current Pi/plugin releases. For a frozen workstation baseline:
+公开的是源码、规则模板、非秘密示例、文档和构建流程。不上传 `auth.json`、API key、OAuth token、session、模型原始 payload、npm 缓存或真实机器答案。
 
-1. create a Git tag for the profile;
-2. pin required npm package versions in `profile.json`;
-3. keep `SHA256SUMS` updated;
-4. deploy from that tag;
-5. use `--no-self-update` when the Pi core itself must remain fixed.
+程序没有后台守护、遥测或定时更新。所有更改发生在用户运行命令并确认后。不要把密码或 token 填进任何模型 ID 或代理 URL 字段。
 
-This separates the everyday "keep my Pi environment current" workflow from a strict reproducible release workflow.
-
-## License
-
-MIT. See [`LICENSE`](LICENSE).
+MIT，见 [LICENSE](LICENSE)。

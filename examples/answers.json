@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "packages": {
+    "fff": "enable",
+    "lsp": "enable",
+    "usage": "enable",
+    "prune": "enable",
+    "web": "enable",
+    "compact": "enable"
+  },
+  "latest_packages": false,
+  "rules": true,
+  "code_mode": true,
+  "tuning": true,
+  "model": { "provider": "openai", "id": "gpt-6-astra", "thinking": "medium" },
+  "summary_model": "openai/gpt-6-luna",
+  "summary_thinking": "medium",
+  "steering_all": false,
+  "network": "split",
+  "public_proxy": "http://127.0.0.1:10809",
+  "private_proxy": "http://127.0.0.1:10808",
+  "provider_proxy": null,
+  "update_pi": true,
+  "prefer_git_bash": true
+}

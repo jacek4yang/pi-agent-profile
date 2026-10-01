@@ -35,3 +35,14 @@ only the managed block. Thus optional features have explicit, documented semanti
 No provider/model availability or actual language-server operation is inferred from
 configuration. Doctor separates file presence from real runtime acceptance. Upstream
 model IDs, toolchains, APIs and extension schemas still require validation on the host.
+
+## Release gates
+
+On trusted main, the source job aligns workspace package versions in Cargo.lock
+without deliberately upgrading locked dependencies, applies rustfmt, and records
+the resulting commit before downstream tests. PRs do not receive automatic writes.
+Five native platform builds and three real-Pi integration jobs gate publication.
+Integration runs in a disposable directory without credentials, verifies missing
+fixed-version packages, retained resource filters, repeat updates and detach without
+cache deletion. Pinned versions use explicit install when missing or changed because
+Pi's update skips exact npm pins. Existing release assets are never overwritten.

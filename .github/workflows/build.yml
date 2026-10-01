@@ -18,23 +18,24 @@ jobs:
       sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Resolve initial lockfile and canonical source
+      - name: Resolve locked and formatted canonical source
         id: source
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f Cargo.lock ]; then
-            if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-              echo 'Cargo.lock must be committed before PR validation' >&2
-              exit 1
-            fi
-            cargo generate-lockfile
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] || [ "$GITHUB_REF" != refs/heads/main ]; then
+            test -f Cargo.lock
+            cargo fmt --all -- --check
+          else
+            if [ ! -f Cargo.lock ]; then cargo generate-lockfile; else cargo update --workspace; fi
             cargo fmt --all
             git config user.name 'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add Cargo.lock src tests
-            git commit -m 'build: lock dependencies and format Rust source'
-            git push origin HEAD:main
+            if ! git diff --cached --quiet; then
+              git commit -m 'build: align workspace lock and canonical Rust formatting'
+              git push origin HEAD:main
+            fi
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   build:
@@ -90,9 +91,43 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 14
+  integration:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install real Pi without credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+          if [ "$RUNNER_OS" = Windows ]; then
+            npm prefix -g >> "$GITHUB_PATH"
+          else
+            echo "$(npm prefix -g)/bin" >> "$GITHUB_PATH"
+          fi
+          echo "USAGE_VERSION=$(npm view pi-context-usage version)" >> "$GITHUB_ENV"
+      - name: Exercise configure, missing pinned package, update and detach
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked
+          python scripts/integration.py
   release:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: [source, build]
+    needs: [source, build, integration]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -133,6 +168,6 @@ jobs:
             echo "Version v$VERSION already exists; artifacts will not overwrite it. Bump Cargo.toml for a new release."
             exit 0
           fi
-          printf '%s\n' "Rust interactive Pi profile manager." "" "Source: $SOURCE_SHA" "Five native platforms passed format, clippy, tests and release-binary smoke checks." "See README for prerequisites, proxy routing, backup boundaries and unsigned-binary warnings." > release-notes.md
+          printf '%s\n' "Rust interactive Pi profile manager." "" "Source: $SOURCE_SHA" "Five native platforms passed format, clippy, tests and release-binary smoke checks. Real Pi package installation/update also passed on Linux, macOS and Windows." "See README for prerequisites, proxy routing, backup boundaries and unsigned-binary warnings." > release-notes.md
           gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --title "Pi Profile v$VERSION" --draft --notes-file release-notes.md
           gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
